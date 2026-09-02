@@ -6,6 +6,10 @@
 <title>GBLU — Mastery: The Core Five</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+<!-- EmailJS: lets this static, no-backend page send real emails from the
+     visitor's browser via a third-party API (no server of ours involved).
+     See the EMAIL_CONFIG block near the top of the <script> for setup. -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <style>
   :root{
     --ink:#1E2A38;
@@ -95,6 +99,36 @@
   .unlock-form input{flex:1 1 220px; background:var(--surface); border:1px solid var(--line); color:var(--text); padding:11px 14px; border-radius:2px; font-size:0.95rem;}
   .unlock-form input:focus-visible{outline:2px solid var(--teal); outline-offset:2px;}
   .payment-error{color:#D98888; font-size:0.86rem; margin-top:12px;}
+  .payment-request-form select{background:var(--surface); border:1px solid var(--line); color:var(--text); padding:11px 14px; border-radius:2px; font-size:0.95rem; flex:1 1 220px;}
+  .payment-request-form input[type="file"]{flex:1 1 220px; background:var(--surface); border:1px solid var(--line); color:var(--text-dim); padding:9px 12px; border-radius:2px; font-size:0.88rem;}
+  .screenshot-attached{flex:1 1 100%; color:var(--teal); font-size:0.86rem;}
+  .request-status-note{padding:12px 14px; border-left:3px solid var(--teal); background:var(--surface-raised); font-size:0.88rem; color:var(--text-dim); margin-bottom:24px; line-height:1.5;}
+  .request-status-note.status-rejected{border-color:#B85C5C;}
+  .request-status-note strong{color:var(--text);}
+  .access-code-details{margin:26px 0 6px; border-top:1px solid var(--line); padding-top:16px;}
+  .access-code-details summary{cursor:pointer; color:var(--text-dim); font-size:0.9rem; margin-bottom:10px;}
+  .access-code-details summary:hover{color:var(--brass);}
+  .request-card{background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--line); border-radius:4px; padding:20px 22px; margin-bottom:16px;}
+  .request-card.status-pending{border-left-color:var(--brass);}
+  .request-card.status-approved{border-left-color:var(--teal);}
+  .request-card.status-rejected{border-left-color:#B85C5C;}
+  .request-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:14px;}
+  .request-title{font-family:var(--serif); font-size:1.08rem; font-weight:600;}
+  .request-status-badge{font-size:0.72rem; letter-spacing:0.4px; padding:4px 10px; border-radius:20px; border:1px solid var(--line); white-space:nowrap; height:fit-content;}
+  .request-status-badge.status-pending{color:var(--brass); border-color:var(--brass);}
+  .request-status-badge.status-approved{color:var(--teal); border-color:var(--teal);}
+  .request-status-badge.status-rejected{color:#D98888; border-color:#B85C5C;}
+  .request-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:10px 18px; font-size:0.9rem; color:var(--text); margin-bottom:14px;}
+  .request-label{display:block; font-size:0.74rem; letter-spacing:0.3px; text-transform:uppercase; color:var(--text-dim); margin-bottom:2px;}
+  .request-screenshot{margin-bottom:14px;}
+  .request-screenshot img{max-width:280px; max-height:280px; border:1px solid var(--line); border-radius:4px; margin-top:6px; display:block;}
+  .request-reason{font-size:0.86rem; color:#D98888; margin-bottom:12px;}
+  .request-actions{display:flex; gap:12px; flex-wrap:wrap;}
+  .btn-reject{background:none; border:1px solid #B85C5C; color:#D98888; padding:13px 20px; border-radius:2px; font-size:0.95rem; font-weight:600;}
+  .btn-reject:hover{background:rgba(184,92,92,0.12);}
+  .audit-list{list-style:none;}
+  .audit-item{padding:10px 0; border-top:1px solid var(--line); font-size:0.87rem; color:var(--text-dim);}
+  .audit-item:last-child{border-bottom:1px solid var(--line);}
   .progress-track{height:6px; background:var(--surface); border-radius:3px; margin:24px 0 36px; overflow:hidden;}
   .progress-fill{height:100%; background:var(--brass); transition:width 0.4s ease;}
   .waypoints{list-style:none; padding-bottom:60px;}
@@ -375,6 +409,39 @@
      access code from ACCESS_CODES to type in; only then does the course
      unlock. Like everything else here, this is a client-side, devtools-
      bypassable gate, not real payment security.
+   - Payment Requests / Admin Dashboard (paymentRequests/PAYMENTS_STORAGE_KEY,
+     auditLog/AUDIT_STORAGE_KEY, adminSession/ADMIN_PASSCODE) are a SECOND,
+     fuller way to run the same manual-verification idea: a learner fills in
+     a form (name/email/method/reference/date/screenshot) instead of waiting
+     for a code, which is stored as a PENDING request in this browser's
+     localStorage (screenshots included, as base64 — capped at 4MB each).
+     An admin who knows ADMIN_PASSCODE can open the dashboard, see requests,
+     and click Approve/Reject. IMPORTANT LIMITS, by design of a single static
+     HTML file with no server:
+       * The dashboard can only ever see requests submitted IN THE SAME
+         BROWSER. A student submitting from their own phone will not appear
+         on an admin's laptop. Making that work needs a real backend + a
+         shared database (e.g. Firebase/Supabase/Postgres) that both sides
+         talk to over the network.
+       * Automatic student notifications (Payment Submitted / Approved /
+         Rejected) are sent via EmailJS (see EMAIL_CONFIG near the top of
+         this script), a third-party service that can send real email
+         straight from the visitor's browser with no server of ours. This
+         file ships with placeholder EmailJS IDs, so sends will silently
+         no-op (logged to the console) until the site owner creates a free
+         EmailJS account, an email template, and fills in serviceId /
+         templateIds / publicKey. The manual "Open email to student" mailto:
+         link is kept as a fallback the admin can use regardless of whether
+         EmailJS is configured. Emails are notification-only: they never
+         grant or revoke course access by themselves. Approval/rejection
+         only ever happens via approvePaymentRequest/rejectPaymentRequest,
+         triggered from the Admin Dashboard by a logged-in admin — an email
+         failing or bouncing has no effect on that decision.
+       * ADMIN_PASSCODE ships in this file's JS and is trivially visible via
+         view-source/devtools. It deters casual clicking, not a real attacker.
+         Treat it the way you'd treat an unlocked door with a sign on it, and
+         do not store anything here you wouldn't want a curious visitor to
+         see.
 
    KNOWN FRONTEND-ONLY / TEMPORARY MECHANISMS TO REPLACE IN A LATER PHASE
    (flagged here for the migration plan — NOT implemented in this phase):
@@ -418,6 +485,49 @@ const ACCESS_CODES = {
   strategic: "CHANGE-ME-STRATEGIC",
   team: "CHANGE-ME-TEAM"
 };
+
+// TODO(owner): change this before launch. It is a convenience gate only —
+// see the big comment above about why it is NOT real security.
+const ADMIN_PASSCODE = "xinstore2024";
+const PAYMENTS_STORAGE_KEY = "gblu-academy-payment-requests-v1";
+const AUDIT_STORAGE_KEY = "gblu-academy-audit-log-v1";
+
+// ---------------------------------------------------------------------------
+// EMAIL NOTIFICATIONS (EmailJS) — TODO(owner): fill these in before launch.
+//
+// This site has no server, so "automatic email" here means EmailJS: a
+// service that sends real email straight from the visitor's browser using an
+// API key that is meant to be public (EmailJS's public keys are designed to
+// be embedded in client-side code, unlike SendGrid/Mailgun secret keys).
+//
+// Setup (~5 minutes, free tier available):
+//   1. Create an account at https://www.emailjs.com
+//   2. Add an "Email Service" (e.g. connect a Gmail/Outlook inbox you own)
+//      -> copy its Service ID into EMAIL_CONFIG.serviceId below.
+//   3. Create three Email Templates in the EmailJS dashboard — one each for
+//      Submitted / Approved / Rejected — using the template variable names
+//      referenced in buildEmailTemplateParams() further down this file
+//      (student_name, course_title, amount_label, payment_method,
+//      transaction_ref, rejection_reason). Copy each template's ID into the
+//      matching slot in EMAIL_CONFIG.templateIds below.
+//   4. Copy your account's Public Key into EMAIL_CONFIG.publicKey below.
+//   5. Reload the page. Until all four values are filled in, this file will
+//      skip sending (with a console.warn) instead of throwing errors, so the
+//      rest of the site keeps working with email simply "not wired up yet."
+//
+// This is notification-only, by design: emails never approve, reject, or
+// unlock anything. All of that still requires a logged-in admin acting in
+// the Admin Dashboard (see approvePaymentRequest/rejectPaymentRequest).
+const EMAIL_CONFIG = {
+  publicKey: "YOUR_EMAILJS_PUBLIC_KEY",
+  serviceId: "YOUR_EMAILJS_SERVICE_ID",
+  templateIds: {
+    submitted: "YOUR_EMAILJS_TEMPLATE_ID_SUBMITTED",
+    approved: "YOUR_EMAILJS_TEMPLATE_ID_APPROVED",
+    rejected: "YOUR_EMAILJS_TEMPLATE_ID_REJECTED"
+  }
+};
+const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const STORAGE_VERSION = 2;
 const CEO_NAME = "Dagmawi Tadesse";
 const CEO_TITLE = "Chief Executive Officer, GBLU";
@@ -1911,6 +2021,9 @@ let state = {
   activeCourse: "core",
   paymentCourse: "core",
   unlockCodeError: "",
+  paymentFormError: "",
+  paymentFormSubmittedId: "",
+  adminLoginError: "",
   ...createCourseProgress(),
   core: createCourseProgress(),
   communication: createCourseProgress(),
@@ -1920,6 +2033,16 @@ let state = {
   profile: createApplicantProfile(),
   verification: {id:"", status:"", message:"", courseTitle:"", name:"", score:null}
 };
+
+// Payment requests, audit log, and the admin session are kept separate from
+// the main learner `state` above (and from STORAGE_KEY) on purpose: they are
+// administrative records, not one learner's course progress, so a learner
+// hitting "Reset GBLU Academy progress" should not be able to erase them.
+let paymentRequests = [];
+let auditLog = [];
+let adminSession = {loggedIn:false, name:""};
+let pendingScreenshotDataUrl = "";
+let pendingScreenshotName = "";
 
 const app = document.getElementById("app");
 
@@ -2188,6 +2311,7 @@ function saveProgress(){
     storage.setItem(STORAGE_KEY, JSON.stringify({
       version: STORAGE_VERSION,
       activeCourse: state.activeCourse,
+      unlocked: state.unlocked,
       completed: state.completed,
       quizAnswers: state.quizAnswers,
       quizLocked: state.quizLocked,
@@ -2210,6 +2334,85 @@ function saveProgress(){
   }catch(e){
     console.warn("GBLU Academy could not save progress.", e);
     return false;
+  }
+}
+
+function loadPaymentRequests(){
+  const storage = getStorage();
+  if(!storage) return [];
+  try{
+    const raw = storage.getItem(PAYMENTS_STORAGE_KEY);
+    if(!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isRecord) : [];
+  }catch(e){
+    console.warn("GBLU Academy could not read saved payment requests.", e);
+    return [];
+  }
+}
+
+function savePaymentRequests(){
+  const storage = getStorage();
+  if(!storage) return false;
+  try{
+    storage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(paymentRequests));
+    return true;
+  }catch(e){
+    console.warn("GBLU Academy could not save payment requests.", e);
+    return false;
+  }
+}
+
+function loadAuditLog(){
+  const storage = getStorage();
+  if(!storage) return [];
+  try{
+    const raw = storage.getItem(AUDIT_STORAGE_KEY);
+    if(!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isRecord) : [];
+  }catch(e){
+    console.warn("GBLU Academy could not read saved audit log.", e);
+    return [];
+  }
+}
+
+function saveAuditLog(){
+  const storage = getStorage();
+  if(!storage) return false;
+  try{
+    storage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLog));
+    return true;
+  }catch(e){
+    console.warn("GBLU Academy could not save audit log.", e);
+    return false;
+  }
+}
+
+function loadPaymentData(){
+  paymentRequests = loadPaymentRequests();
+  auditLog = loadAuditLog();
+}
+
+function generateRequestId(prefix){
+  let token = "";
+  try{
+    if(window.crypto && window.crypto.getRandomValues){
+      const values = new Uint32Array(2);
+      window.crypto.getRandomValues(values);
+      token = Array.from(values).map(value => value.toString(36).toUpperCase().padStart(6,"0")).join("").slice(0,10);
+    }
+  }catch(e){ /* use the fallback below */ }
+  if(!token) token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2,8)}`.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(-10);
+  return `${prefix}-${token}`;
+}
+
+function formatTimestamp(iso){
+  if(!iso) return "—";
+  try{
+    return new Date(iso).toLocaleString();
+  }catch(e){
+    return String(iso);
   }
 }
 
@@ -2286,6 +2489,10 @@ function openPayment(courseId){
   state.paymentCourse = ["core","leadership","communication","business","strategic","team"].includes(courseId) ? courseId : "core";
   state.view = "payment";
   state.unlockCodeError = "";
+  state.paymentFormError = "";
+  state.paymentFormSubmittedId = "";
+  pendingScreenshotDataUrl = "";
+  pendingScreenshotName = "";
   window.scrollTo(0,0);
   render();
 }
@@ -2293,6 +2500,277 @@ function openPayment(courseId){
 function backToDashboardFromPayment(){
   state.view = "home";
   state.unlockCodeError = "";
+  window.scrollTo(0,0);
+  render();
+}
+
+function handleScreenshotChange(input){
+  const file = input && input.files ? input.files[0] : null;
+  if(!file){
+    pendingScreenshotDataUrl = "";
+    pendingScreenshotName = "";
+    return;
+  }
+  if(!/^image\//.test(file.type)){
+    pendingScreenshotDataUrl = "";
+    pendingScreenshotName = "";
+    state.paymentFormError = "Please attach an image file (a screenshot of your payment confirmation).";
+    render();
+    return;
+  }
+  if(file.size > MAX_SCREENSHOT_BYTES){
+    pendingScreenshotDataUrl = "";
+    pendingScreenshotName = "";
+    state.paymentFormError = "That image is larger than 4MB. Please attach a smaller screenshot.";
+    render();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function(){
+    pendingScreenshotDataUrl = String(reader.result || "");
+    pendingScreenshotName = file.name;
+    state.paymentFormError = "";
+    render();
+  };
+  reader.onerror = function(){
+    pendingScreenshotDataUrl = "";
+    pendingScreenshotName = "";
+    state.paymentFormError = "That image could not be read. Please try attaching it again.";
+    render();
+  };
+  reader.readAsDataURL(file);
+}
+
+function latestRequestFor(courseId){
+  const matches = paymentRequests.filter(r => r.courseId === courseId);
+  if(!matches.length) return null;
+  return matches.reduce((latest, r) => new Date(r.submittedAt) > new Date(latest.submittedAt) ? r : latest);
+}
+
+function submitPaymentRequest(event){
+  if(event) event.preventDefault();
+  const validIds = ["core","leadership","communication","business","strategic","team"];
+  const courseId = validIds.includes(state.paymentCourse) ? state.paymentCourse : "core";
+  const name = String((document.getElementById("payerName")||{}).value || "").trim();
+  const email = String((document.getElementById("payerEmail")||{}).value || "").trim();
+  const method = String((document.getElementById("payerMethod")||{}).value || "").trim();
+  const ref = String((document.getElementById("payerRef")||{}).value || "").trim();
+  const payDate = String((document.getElementById("payerDate")||{}).value || "").trim();
+  if(!name || !email || !method || !ref || !payDate){
+    state.paymentFormError = "Please fill in your name, email, payment method, reference number, and payment date.";
+    render();
+    return;
+  }
+  if(!pendingScreenshotDataUrl){
+    state.paymentFormError = "Please attach a screenshot of your payment confirmation.";
+    render();
+    return;
+  }
+  const country = selectedCountry();
+  const region = String(country || "").trim().toLowerCase() === "ethiopia" ? "ethiopia" : "international";
+  const course = activeCourseInfoFor(courseId);
+  const request = {
+    id: generateRequestId("PR"),
+    studentName: name,
+    studentEmail: email,
+    courseId,
+    courseTitle: course.title,
+    region,
+    amountLabel: formatCoursePrice(courseId, country),
+    paymentMethod: method,
+    transactionRef: ref,
+    paymentDate: payDate,
+    screenshotDataUrl: pendingScreenshotDataUrl,
+    screenshotName: pendingScreenshotName,
+    submittedAt: new Date().toISOString(),
+    status: "PENDING",
+    decidedAt: null,
+    decidedBy: null,
+    rejectionReason: ""
+  };
+  paymentRequests.push(request);
+  savePaymentRequests();
+  pendingScreenshotDataUrl = "";
+  pendingScreenshotName = "";
+  state.paymentFormError = "";
+  state.paymentFormSubmittedId = request.id;
+  sendAutomaticEmail("submitted", request);
+  render();
+}
+
+function logAudit(action, request){
+  auditLog.push({
+    id: generateRequestId("AUD"),
+    action,
+    at: new Date().toISOString(),
+    admin: adminSession.name || "Unknown admin",
+    requestId: request.id,
+    courseId: request.courseId,
+    courseTitle: request.courseTitle,
+    studentName: request.studentName,
+    studentEmail: request.studentEmail
+  });
+  saveAuditLog();
+}
+
+function approvePaymentRequest(id){
+  if(!adminSession.loggedIn) return;
+  const request = paymentRequests.find(r => r.id === id);
+  if(!request || request.status !== "PENDING") return;
+  request.status = "APPROVED";
+  request.decidedAt = new Date().toISOString();
+  request.decidedBy = adminSession.name || "Unknown admin";
+  savePaymentRequests();
+  // Activate enrollment: unlock the purchased course so it appears unlocked
+  // in "Your courses" and the learner can start it immediately. This only
+  // affects THIS browser's own progress data — see the top-of-file note on
+  // why a real cross-device rollout needs a backend.
+  const p = progressFor(request.courseId);
+  p.unlocked = true;
+  saveProgress();
+  logAudit("approved", request);
+  sendAutomaticEmail("approved", request);
+  render();
+}
+
+function rejectPaymentRequestPrompt(id){
+  const reason = typeof window.prompt === "function"
+    ? window.prompt("Optional: reason for rejecting this payment (you can share this with the student).", "")
+    : "";
+  if(reason === null) return;
+  rejectPaymentRequest(id, reason);
+}
+
+function rejectPaymentRequest(id, reason){
+  if(!adminSession.loggedIn) return;
+  const request = paymentRequests.find(r => r.id === id);
+  if(!request || request.status !== "PENDING") return;
+  request.status = "REJECTED";
+  request.decidedAt = new Date().toISOString();
+  request.decidedBy = adminSession.name || "Unknown admin";
+  request.rejectionReason = String(reason || "").trim();
+  savePaymentRequests();
+  logAudit("rejected", request);
+  sendAutomaticEmail("rejected", request);
+  render();
+}
+
+function notificationEmailContent(request){
+  if(request.status === "APPROVED"){
+    return {
+      subject: `Your ${request.courseTitle} enrollment is confirmed`,
+      body: `Hi ${request.studentName},\n\nYour payment has been verified. Your course is now available.\n\n${request.courseTitle} (${request.amountLabel} via ${request.paymentMethod}, reference ${request.transactionRef}) is unlocked — sign back in to GBLU Academy and open it from "Your courses".\n\nThanks for enrolling!\nGBLU Academy`
+    };
+  }
+  if(request.status === "REJECTED"){
+    return {
+      subject: `About your ${request.courseTitle} payment`,
+      body: `Hi ${request.studentName},\n\nYour payment could not be verified.\n\nWe were unable to confirm your payment for ${request.courseTitle} (reference ${request.transactionRef}).${request.rejectionReason ? ` Reason: ${request.rejectionReason}.` : ""}\n\nPlease reply to this email, or resubmit your payment details with a clearer screenshot, and we'll take another look.\n\nGBLU Academy`
+    };
+  }
+  // Still PENDING: this is the "payment submitted" notification.
+  return {
+    subject: `We received your ${request.courseTitle} payment submission`,
+    body: `Hi ${request.studentName},\n\nYour payment has been received and is waiting for verification.\n\nWe'll manually confirm your payment for ${request.courseTitle} (${request.amountLabel} via ${request.paymentMethod}, reference ${request.transactionRef}) and follow up shortly — no action is needed from you right now.\n\nGBLU Academy`
+  };
+}
+
+function mailtoLink(request){
+  const content = notificationEmailContent(request);
+  return `mailto:${encodeURIComponent(request.studentEmail)}?subject=${encodeURIComponent(content.subject)}&body=${encodeURIComponent(content.body)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Automatic notification emails (EmailJS). Fire-and-forget: a slow or failed
+// send is logged to the console and otherwise ignored — it never blocks or
+// reverses submission/approval/rejection, which are the source of truth.
+
+function emailJsIsConfigured(){
+  const c = EMAIL_CONFIG;
+  return !!(c.publicKey && !c.publicKey.startsWith("YOUR_")
+    && c.serviceId && !c.serviceId.startsWith("YOUR_")
+    && c.templateIds.submitted && !c.templateIds.submitted.startsWith("YOUR_")
+    && c.templateIds.approved && !c.templateIds.approved.startsWith("YOUR_")
+    && c.templateIds.rejected && !c.templateIds.rejected.startsWith("YOUR_"));
+}
+
+function initEmailJs(){
+  if(typeof window === "undefined" || !window.emailjs) return;
+  if(!emailJsIsConfigured()) return;
+  try{
+    window.emailjs.init({publicKey: EMAIL_CONFIG.publicKey});
+  }catch(err){
+    console.warn("EmailJS failed to initialize:", err);
+  }
+}
+
+// Builds the variable set handed to whichever EmailJS template is used.
+// Keep these names in sync with the {{placeholders}} inside each of the
+// three EmailJS templates referenced by EMAIL_CONFIG.templateIds.
+function buildEmailTemplateParams(request){
+  const content = notificationEmailContent(request);
+  return {
+    to_email: request.studentEmail,
+    student_name: request.studentName,
+    course_title: request.courseTitle,
+    amount_label: request.amountLabel,
+    payment_method: request.paymentMethod,
+    transaction_ref: request.transactionRef,
+    rejection_reason: request.rejectionReason || "",
+    subject: content.subject,
+    message: content.body
+  };
+}
+
+// kind: "submitted" | "approved" | "rejected"
+function sendAutomaticEmail(kind, request){
+  if(!request || !request.studentEmail) return;
+  if(typeof window === "undefined" || !window.emailjs){
+    console.warn(`EmailJS SDK not loaded — skipped "${kind}" email to ${request.studentEmail}.`);
+    return;
+  }
+  if(!emailJsIsConfigured()){
+    console.warn(`EmailJS not configured yet (see EMAIL_CONFIG) — skipped "${kind}" email to ${request.studentEmail}.`);
+    return;
+  }
+  const templateId = EMAIL_CONFIG.templateIds[kind];
+  const params = buildEmailTemplateParams(request);
+  window.emailjs.send(EMAIL_CONFIG.serviceId, templateId, params)
+    .then(() => console.info(`Sent "${kind}" email to ${request.studentEmail}.`))
+    .catch(err => console.warn(`Failed to send "${kind}" email to ${request.studentEmail}:`, err));
+}
+
+function goToAdmin(){
+  state.view = adminSession.loggedIn ? "admin" : "admin-login";
+  state.adminLoginError = "";
+  window.scrollTo(0,0);
+  render();
+}
+
+function submitAdminLogin(event){
+  if(event) event.preventDefault();
+  const name = String((document.getElementById("adminNameField")||{}).value || "").trim();
+  const pass = String((document.getElementById("adminPassField")||{}).value || "");
+  if(!name){
+    state.adminLoginError = "Enter your name so approvals and rejections can be attributed to you.";
+    render();
+    return;
+  }
+  if(pass !== ADMIN_PASSCODE){
+    state.adminLoginError = "Incorrect passcode.";
+    render();
+    return;
+  }
+  adminSession = {loggedIn:true, name};
+  state.adminLoginError = "";
+  state.view = "admin";
+  window.scrollTo(0,0);
+  render();
+}
+
+function adminLogout(){
+  adminSession = {loggedIn:false, name:""};
+  state.view = "home";
   window.scrollTo(0,0);
   render();
 }
@@ -2456,6 +2934,7 @@ function renderNav(){
         </div>
         <div class="nav-links">
           ${links.map(([v,label]) => `<button class="${state.view===v?'active':''}" ${state.view===v?'aria-current="page"':''} onclick="goTo('${v}')">${label}</button>`).join("")}
+          <button class="${state.view==='admin'||state.view==='admin-login'?'active':''}" ${state.view==='admin'||state.view==='admin-login'?'aria-current="page"':''} onclick="goToAdmin()" title="Admin dashboard — payment verification only, not a public feature">Admin</button>
           <a class="nav-site-link" href="${GBLU_WEBSITE_URL}" target="_blank" rel="noopener" title="Scan or click to visit the GBLU website">
             <img src="${GBLU_QR_IMG}" alt="QR code linking to the GBLU website" class="nav-site-qr">
             <span class="nav-site-label">Visit GBLU<br>online</span>
@@ -2651,14 +3130,17 @@ function renderPayment(courseIdOverride){
   state.paymentCourse = courseId;
   const course = activeCourseInfoFor(courseId);
   const price = formatCoursePrice(courseId, selectedCountry());
+  const profile = state.profile || createApplicantProfile();
+  const existing = latestRequestFor(courseId);
+  const justSubmitted = state.paymentFormSubmittedId && existing && existing.id === state.paymentFormSubmittedId;
   return `
     <section class="course-head">
       <h2>Unlock ${escapeHtml(course.title)}</h2>
-      <p>This course is locked until your payment has been manually confirmed. Pay using one of the options below, then enter the access code you're given once that payment is verified.</p>
+      <p>This course is locked until your payment has been manually confirmed. Pay using one of the options below, then either submit your payment for review or, if you already have an access code, enter it directly.</p>
       <div class="enrollment-note"><strong>Enrollment fee: ${price}.</strong> Ethiopia: 600 birr for GBLU Mastery: The Core Five and 200 birr for other courses. International pricing starts at $5 / $2 and is shown in the selected country's currency.</div>
     </section>
     <div class="payment-panel">
-      <div class="payment-disclaimer">This site is not connected to Telebirr, M-Pesa, or CBE — it cannot detect, receive, or confirm a payment automatically. Every payment here is verified manually. After you pay, keep your transaction reference or screenshot; once your payment is confirmed by hand, you'll be given an access code to enter below.</div>
+      <div class="payment-disclaimer">This site is not connected to Telebirr, M-Pesa, or CBE — it cannot detect, receive, or confirm a payment automatically. Every payment here is verified manually by a person. After you pay, keep your transaction reference and a screenshot of the confirmation.</div>
       <div class="payment-methods">
         ${PAYMENT_METHODS.map(m => `
           <div class="payment-method">
@@ -2668,14 +3150,140 @@ function renderPayment(courseIdOverride){
           </div>
         `).join("")}
       </div>
-      <form class="unlock-form" onsubmit="submitUnlockCode(event)">
-        <label for="unlockCodeField">Access code</label>
-        <input id="unlockCodeField" type="text" placeholder="Enter the code you were given" autocomplete="off" spellcheck="false">
-        <button class="btn-primary" type="submit">Unlock course</button>
+
+      ${existing ? `
+        <div class="request-status-note status-${existing.status.toLowerCase()}">
+          ${justSubmitted ? `<strong>Submitted.</strong> ` : ''}Your ${justSubmitted ? '' : 'most recent '}submission (reference ${escapeHtml(existing.transactionRef)}) is currently <strong>${existing.status}</strong>.
+          ${existing.status === "PENDING" ? " We'll unlock the course as soon as it's manually verified." : ""}
+          ${existing.status === "REJECTED" ? ` ${existing.rejectionReason ? `Reason: ${escapeHtml(existing.rejectionReason)}. ` : ''}You're welcome to submit again below.` : ""}
+        </div>
+      ` : ''}
+
+      <h3 class="lesson-h3" style="margin-top:0;">Submit your payment for review</h3>
+      <p class="feedback" style="margin-bottom:16px;">Fill this in after paying. An administrator will manually check it against the ${PAYMENT_METHODS.map(m=>escapeHtml(m.name)).join('/')} account and approve or reject it.</p>
+      <form class="unlock-form payment-request-form" onsubmit="submitPaymentRequest(event)">
+        <label for="payerName">Your full name</label>
+        <input id="payerName" type="text" value="${escapeHtml(profile.name)}" placeholder="Full name" autocomplete="name">
+        <label for="payerEmail">Your email</label>
+        <input id="payerEmail" type="email" value="${escapeHtml(profile.email)}" placeholder="you@example.com" autocomplete="email">
+        <label for="payerMethod">Payment method used</label>
+        <select id="payerMethod">
+          ${PAYMENT_METHODS.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)}</option>`).join("")}
+        </select>
+        <label for="payerRef">Transaction / reference number</label>
+        <input id="payerRef" type="text" placeholder="e.g. the code from your Telebirr SMS" autocomplete="off">
+        <label for="payerDate">Payment date</label>
+        <input id="payerDate" type="date" max="${new Date().toISOString().slice(0,10)}">
+        <label for="payerScreenshot">Payment screenshot</label>
+        <input id="payerScreenshot" type="file" accept="image/*" onchange="handleScreenshotChange(this)">
+        ${pendingScreenshotDataUrl ? `<div class="screenshot-attached">Attached: ${escapeHtml(pendingScreenshotName || 'screenshot')} ✓</div>` : ''}
+        <button class="btn-primary" type="submit">Submit for verification</button>
       </form>
-      ${state.unlockCodeError ? `<div class="payment-error" role="alert">${escapeHtml(state.unlockCodeError)}</div>` : ''}
-      <button class="btn-ghost" style="margin-top:10px;" onclick="backToDashboardFromPayment()">Back to dashboard</button>
+      ${state.paymentFormError ? `<div class="payment-error" role="alert">${escapeHtml(state.paymentFormError)}</div>` : ''}
+
+      <details class="access-code-details">
+        <summary>Already have an access code?</summary>
+        <form class="unlock-form" onsubmit="submitUnlockCode(event)">
+          <label for="unlockCodeField">Access code</label>
+          <input id="unlockCodeField" type="text" placeholder="Enter the code you were given" autocomplete="off" spellcheck="false">
+          <button class="btn-primary" type="submit">Unlock course</button>
+        </form>
+        ${state.unlockCodeError ? `<div class="payment-error" role="alert">${escapeHtml(state.unlockCodeError)}</div>` : ''}
+      </details>
+
+      <button class="btn-ghost" style="margin-top:14px;" onclick="backToDashboardFromPayment()">Back to dashboard</button>
     </div>
+  `;
+}
+
+function renderAdminLogin(){
+  return `
+    <section class="course-head">
+      <h2>Admin sign-in</h2>
+      <p>This gate is a convenience, not real security: the passcode lives inside this file's JavaScript, so anyone who views the page source or opens devtools can read or bypass it. Do not treat this as protecting sensitive data, and don't rely on it if this site handles payments at real volume — a real deployment needs server-side authentication.</p>
+    </section>
+    <div class="payment-panel" style="max-width:420px;">
+      <form class="unlock-form" onsubmit="submitAdminLogin(event)">
+        <label for="adminNameField">Your name (shown on every approval/rejection)</label>
+        <input id="adminNameField" type="text" placeholder="e.g. Dagmawi" autocomplete="off">
+        <label for="adminPassField">Admin passcode</label>
+        <input id="adminPassField" type="password" placeholder="Passcode" autocomplete="off">
+        <button class="btn-primary" type="submit">Sign in</button>
+      </form>
+      ${state.adminLoginError ? `<div class="payment-error" role="alert">${escapeHtml(state.adminLoginError)}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderPaymentRequestCard(r){
+  const statusClass = r.status === "APPROVED" ? "status-approved" : r.status === "REJECTED" ? "status-rejected" : "status-pending";
+  return `
+    <div class="request-card ${statusClass}">
+      <div class="request-top">
+        <div class="request-title">${escapeHtml(r.studentName)} — ${escapeHtml(r.courseTitle)}</div>
+        <div class="request-status-badge ${statusClass}">${escapeHtml(r.status)}</div>
+      </div>
+      <div class="request-grid">
+        <div><span class="request-label">Email</span>${escapeHtml(r.studentEmail)}</div>
+        <div><span class="request-label">Region</span>${r.region === "ethiopia" ? "Ethiopian" : "International"}</div>
+        <div><span class="request-label">Amount</span>${escapeHtml(r.amountLabel)}</div>
+        <div><span class="request-label">Method</span>${escapeHtml(r.paymentMethod)}</div>
+        <div><span class="request-label">Reference</span>${escapeHtml(r.transactionRef)}</div>
+        <div><span class="request-label">Payment date</span>${escapeHtml(r.paymentDate)}</div>
+        <div><span class="request-label">Submitted</span>${escapeHtml(formatTimestamp(r.submittedAt))}</div>
+        ${r.status !== "PENDING" ? `<div><span class="request-label">Decided</span>${escapeHtml(formatTimestamp(r.decidedAt))} by ${escapeHtml(r.decidedBy||"—")}</div>` : ''}
+      </div>
+      ${r.screenshotDataUrl ? `<div class="request-screenshot"><span class="request-label">Screenshot</span><br><img src="${r.screenshotDataUrl}" alt="Payment screenshot from ${escapeHtml(r.studentName)}"></div>` : `<div class="request-label">No screenshot attached</div>`}
+      ${r.status === "REJECTED" && r.rejectionReason ? `<div class="request-reason">Rejection reason: ${escapeHtml(r.rejectionReason)}</div>` : ''}
+      <div class="request-actions">
+        ${r.status === "PENDING" ? `
+          <button class="btn-primary" onclick="approvePaymentRequest('${r.id}')">✅ Approve payment</button>
+          <button class="btn-reject" onclick="rejectPaymentRequestPrompt('${r.id}')">❌ Reject payment</button>
+        ` : `
+          <a class="btn-ghost" href="${mailtoLink(r)}">📧 Open email to student</a>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderAuditLog(){
+  const entries = [...auditLog].sort((a,b) => new Date(b.at) - new Date(a.at)).slice(0, 50);
+  if(!entries.length) return `<p class="feedback">No approvals or rejections yet.</p>`;
+  return `
+    <ul class="audit-list">
+      ${entries.map(e => `
+        <li class="audit-item">
+          <strong>${e.action === "approved" ? "✅ Approved" : "❌ Rejected"}</strong>
+          — ${escapeHtml(e.studentName)} (${escapeHtml(e.studentEmail)}) for ${escapeHtml(e.courseTitle)}
+          by ${escapeHtml(e.admin)} on ${escapeHtml(formatTimestamp(e.at))}
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function renderAdminDashboard(){
+  const requests = [...paymentRequests].sort((a,b) => {
+    if(a.status === "PENDING" && b.status !== "PENDING") return -1;
+    if(b.status === "PENDING" && a.status !== "PENDING") return 1;
+    return new Date(b.submittedAt) - new Date(a.submittedAt);
+  });
+  const pendingCount = paymentRequests.filter(r => r.status === "PENDING").length;
+  return `
+    <section class="course-head">
+      <h2>Admin dashboard</h2>
+      <p>Signed in as <strong>${escapeHtml(adminSession.name)}</strong>. ${pendingCount} payment${pendingCount===1?'':'s'} awaiting review. <button class="btn-ghost" onclick="adminLogout()">Sign out</button></p>
+      <div class="enrollment-note">This dashboard only shows payment requests submitted <strong>in this browser</strong>. A student submitting from their own phone or computer will not appear here unless this file is connected to a shared backend — see the note near the top of the source code.</div>
+    </section>
+    <section class="dash-courses">
+      <h3 class="dash-heading">Payment requests</h3>
+      ${requests.length === 0 ? `<p class="feedback">No payment requests yet.</p>` : requests.map(r => renderPaymentRequestCard(r)).join("")}
+    </section>
+    <section class="dash-courses">
+      <h3 class="dash-heading">Audit log</h3>
+      ${renderAuditLog()}
+    </section>
   `;
 }
 
@@ -3051,10 +3659,14 @@ function render(){
   else if(state.view === "lesson") body = isCourseUnlocked(state.activeCourse) ? renderLesson() : renderPayment(state.activeCourse);
   else if(state.view === "certificate") body = isCourseUnlocked(state.activeCourse) ? renderCertificate() : renderPayment(state.activeCourse);
   else if(state.view === "verify") body = renderVerification();
+  else if(state.view === "admin-login") body = adminSession.loggedIn ? renderAdminDashboard() : renderAdminLogin();
+  else if(state.view === "admin") body = adminSession.loggedIn ? renderAdminDashboard() : renderAdminLogin();
   app.innerHTML = renderNav() + body;
 }
 
+initEmailJs();
 loadProgress();
+loadPaymentData();
 </script>
 </body>
 </html>
