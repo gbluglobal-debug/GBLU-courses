@@ -217,6 +217,8 @@
   .profile-bio{grid-column:1 / -1; padding-top:6px;}
   .profile-empty{color:var(--text-dim); font-size:0.9rem;}
   .course-card-price{color:var(--brass); font-size:0.9rem; font-weight:600; margin-top:14px;}
+  .price-original{color:var(--text-dim); text-decoration:line-through; font-weight:400; margin-right:6px;}
+  .price-current{color:var(--brass); font-weight:700;}
   .name-input{display:flex; gap:10px; justify-content:center; margin:26px 0 14px; flex-wrap:wrap;}
   .name-input input{background:var(--surface); border:1px solid var(--line); color:var(--text); padding:12px 16px; border-radius:2px; font-size:0.95rem; width:280px; font-family:var(--sans);}
   .lock-warning{text-align:center; font-size:0.83rem; color:var(--brass-dim); margin-bottom:30px; max-width:48ch; margin-left:auto; margin-right:auto;}
@@ -485,6 +487,25 @@ const ACCESS_CODES = {
   strategic: "CHANGE-ME-STRATEGIC",
   team: "CHANGE-ME-TEAM"
 };
+
+// Real backend: the Telegram bot + Cloudflare Worker that approves payments and
+// issues/validates access codes. ACCESS_CODES above is no longer used for
+// checking — ​codes now live in the Worker's storage — but is left in place
+// in case you ever want a manual local override.
+const GBLU_BOT_USERNAME = "GBLU_CoursesBot";
+const GBLU_BOT_API = "https://gblu-course-bot.dagitad1998.workers.dev";
+
+// Every browser that redeems a code gets a random id saved to localStorage the
+// first time it's needed. This is what "binds" a code to one device.
+function getDeviceId(){
+  let id = "";
+  try{ id = localStorage.getItem("gblu-device-id") || ""; }catch(e){}
+  if(!id){
+    id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+    try{ localStorage.setItem("gblu-device-id", id); }catch(e){}
+  }
+  return id;
+}
 
 // TODO(owner): change this before launch. It is a convenience gate only —
 // see the big comment above about why it is NOT real security.
@@ -2263,14 +2284,36 @@ function coursePrice(courseId, country){
   return {amount:currency.code === "JPY" || currency.code === "KRW" ? Math.round(baseUsd * currency.rate) : Math.round(baseUsd * currency.rate * 100) / 100, code:currency.code, baseUsd, local:false};
 }
 
-function formatCoursePrice(courseId, country){
-  const price = coursePrice(courseId, country);
+// The "before discount" price, shown struck through next to the real price.
+// Core Five: $6 / 1000 birr → $5 / 600 birr. Every other course: $3 / 300 birr → $2 / 200 birr.
+function coursePriceOriginal(courseId, country){
+  const baseUsd = courseId === "core" ? 6 : 3;
+  const normalizedCountry = String(country || "").trim().toLowerCase();
+  if(normalizedCountry === "ethiopia"){
+    return {amount:courseId === "core" ? 1000 : 300, code:"ETB", label:"birr", local:true};
+  }
+  const currency = currencyForCountry(country);
+  return {amount:currency.code === "JPY" || currency.code === "KRW" ? Math.round(baseUsd * currency.rate) : Math.round(baseUsd * currency.rate * 100) / 100, code:currency.code, baseUsd, local:false};
+}
+
+function formatCoursePriceValue(price){
   if(price.local) return `${price.amount.toLocaleString()} birr`;
   try{
     return new Intl.NumberFormat(undefined, {style:"currency", currency:price.code, maximumFractionDigits:price.amount < 10 ? 2 : 0}).format(price.amount);
   }catch(e){
     return `${price.code} ${price.amount}`;
   }
+}
+
+function formatCoursePrice(courseId, country){
+  return formatCoursePriceValue(coursePrice(courseId, country));
+}
+
+// "was X, now Y" markup used at the top of every course card.
+function formatCoursePriceDiscount(courseId, country){
+  const original = formatCoursePriceValue(coursePriceOriginal(courseId, country));
+  const current = formatCoursePriceValue(coursePrice(courseId, country));
+  return `<span class="price-original">${original}</span> <span class="price-current">${current}</span>`;
 }
 
 function loadProgress(){
@@ -2775,27 +2818,51 @@ function adminLogout(){
   render();
 }
 
-function submitUnlockCode(event){
+async function submitUnlockCode(event){
   if(event) event.preventDefault();
   const courseId = ["core","leadership","communication","business","strategic","team"].includes(state.paymentCourse) ? state.paymentCourse : "core";
   const input = document.getElementById("unlockCodeField");
   const entered = String(input ? input.value : "").trim();
-  const expected = String(ACCESS_CODES[courseId] || "").trim();
   if(!entered){
     state.unlockCodeError = "Enter the access code you were given after your payment was verified.";
     render();
     return;
   }
-  if(!expected || entered.toUpperCase() !== expected.toUpperCase()){
-    state.unlockCodeError = "That access code doesn't match. Double-check it, or wait for it to be sent once your payment is manually confirmed.";
+
+  state.unlockCodeError = "Checking your code…";
+  render();
+
+  const ERROR_MESSAGES = {
+    invalid_code: "That access code doesn't exist. Double-check it, or wait for it to be sent once your payment is approved on Telegram.",
+    wrong_course: "That code belongs to a different course.",
+    already_used: "That code has already been used on a different device, so it can't be reused here.",
+    missing_fields: "Something went wrong sending your request. Please try again."
+  };
+
+  try{
+    const res = await fetch(`${GBLU_BOT_API}/validate`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ code: entered, course: courseId, deviceId: getDeviceId() })
+    });
+    let data = {};
+    try{ data = await res.json(); }catch(e){}
+
+    if(!res.ok || !data.ok){
+      state.unlockCodeError = ERROR_MESSAGES[data.error] || "That access code doesn't match. Double-check it and try again.";
+      render();
+      return;
+    }
+
+    const p = progressFor(courseId);
+    p.unlocked = true;
+    state.unlockCodeError = "";
+    saveProgress();
+    openCourse(courseId);
+  }catch(err){
+    state.unlockCodeError = "Couldn't reach the verification server. Check your internet connection and try again.";
     render();
-    return;
   }
-  const p = progressFor(courseId);
-  p.unlocked = true;
-  state.unlockCodeError = "";
-  saveProgress();
-  openCourse(courseId);
 }
 
 function updateLearnerName(value){
@@ -2934,7 +3001,6 @@ function renderNav(){
         </div>
         <div class="nav-links">
           ${links.map(([v,label]) => `<button class="${state.view===v?'active':''}" ${state.view===v?'aria-current="page"':''} onclick="goTo('${v}')">${label}</button>`).join("")}
-          <button class="${state.view==='admin'||state.view==='admin-login'?'active':''}" ${state.view==='admin'||state.view==='admin-login'?'aria-current="page"':''} onclick="goToAdmin()" title="Admin dashboard — payment verification only, not a public feature">Admin</button>
           <a class="nav-site-link" href="${GBLU_WEBSITE_URL}" target="_blank" rel="noopener" title="Scan or click to visit the GBLU website">
             <img src="${GBLU_QR_IMG}" alt="QR code linking to the GBLU website" class="nav-site-qr">
             <span class="nav-site-label">Visit GBLU<br>online</span>
@@ -3035,24 +3101,13 @@ function renderHome(){
     <section class="dash-courses">
       <h2 class="dash-heading">Your courses</h2>
       <div class="course-grid">
-        <div class="course-card" role="button" tabindex="0" aria-label="Open GBLU Mastery: The Core Five" onclick="openCourse('core')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCourse('core')}">
-          <div class="course-card-top">
-            <div class="course-card-title">★ GBLU Mastery: The Core Five</div>
-            <div class="course-card-badge ${isCourseUnlocked("core")?'active':''}">${!isCourseUnlocked("core") ? '🔒 Locked' : (coreDone===CORE_FIVE_LESSONS.length ? 'Completed' : (coreDone>0 ? 'In progress' : 'Start here'))}</div>
-          </div>
-          <div class="course-card-desc">A general leadership foundation with two lessons each in general leadership, communication and influence, business fundamentals and entrepreneurship, team culture and management, and strategic decision-making.</div>
-          <div class="course-card-price">Enrollment fee: ${formatCoursePrice("core", selectedCountry())}</div>
-          <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${corePct}%"></div></div>
-          <div class="course-card-meta">${coreDone} of ${CORE_FIVE_LESSONS.length} lessons complete · 10 questions each</div>
-          <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('core')">${!isCourseUnlocked("core") ? '🔒 Unlock this course' : (coreDone===CORE_FIVE_LESSONS.length ? 'Review course' : (coreDone>0 ? 'Continue course' : 'Start the course'))}</button>
-        </div>
         <div class="course-card" role="button" tabindex="0" aria-label="Open Leadership Path" onclick="openCourse('leadership')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCourse('leadership')}">
           <div class="course-card-top">
             <div class="course-card-title">Leadership Path</div>
             <div class="course-card-badge ${isCourseUnlocked("leadership")?'active':''}">${!isCourseUnlocked("leadership") ? '🔒 Locked' : (leadershipDone===LESSONS.length ? 'Completed' : (leadershipDone>0 ? 'In progress' : 'Start here'))}</div>
           </div>
+          <div class="course-card-price">${formatCoursePriceDiscount("leadership", selectedCountry())}</div>
           <div class="course-card-desc">Ten lessons on general leadership, including one focused self-leadership lesson alongside communication, emotional intelligence, team building, decisions, conflict, and vision.</div>
-          <div class="course-card-price">Enrollment fee: ${formatCoursePrice("leadership", selectedCountry())}</div>
           <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${leadershipPct}%"></div></div>
           <div class="course-card-meta">${leadershipDone} of ${LESSONS.length} lessons complete</div>
           <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('leadership')">${!isCourseUnlocked("leadership") ? '🔒 Unlock this course' : (leadershipDone===LESSONS.length ? 'Review course' : (leadershipDone>0 ? 'Continue course' : 'Start the course'))}</button>
@@ -3063,8 +3118,8 @@ function renderHome(){
               <div class="course-card-title">${c.title}</div>
               <div class="course-card-badge ${isCourseUnlocked("communication")?'active':''}">${!isCourseUnlocked("communication") ? '🔒 Locked' : (communicationDone===COMMUNICATION_LESSONS.length ? 'Completed' : (communicationDone>0 ? 'In progress' : 'Available'))}</div>
             </div>
+            <div class="course-card-price">${formatCoursePriceDiscount("communication", selectedCountry())}</div>
             <div class="course-card-desc">${c.desc}</div>
-            <div class="course-card-price">Enrollment fee: ${formatCoursePrice("communication", selectedCountry())}</div>
             <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${communicationPct}%"></div></div>
             <div class="course-card-meta">${communicationDone} of ${COMMUNICATION_LESSONS.length} lessons complete · 10 questions each</div>
             <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('communication')">${!isCourseUnlocked("communication") ? '🔒 Unlock this course' : (communicationDone===COMMUNICATION_LESSONS.length ? 'Review course' : (communicationDone>0 ? 'Continue course' : 'Start the course'))}</button>
@@ -3075,8 +3130,8 @@ function renderHome(){
               <div class="course-card-title"><span aria-hidden="true" style="margin-right:6px;">💼</span>${c.title}</div>
               <div class="course-card-badge ${isCourseUnlocked("business")?'active':''}">${!isCourseUnlocked("business") ? '🔒 Locked' : (businessDone===BUSINESS_LESSONS.length ? 'Completed' : (businessDone>0 ? 'In progress' : 'Available'))}</div>
             </div>
+            <div class="course-card-price">${formatCoursePriceDiscount("business", selectedCountry())}</div>
             <div class="course-card-desc">${c.desc}</div>
-            <div class="course-card-price">Enrollment fee: ${formatCoursePrice("business", selectedCountry())}</div>
             <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${businessPct}%"></div></div>
             <div class="course-card-meta">${businessDone} of ${BUSINESS_LESSONS.length} lessons complete · 5 questions each</div>
             <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('business')">${!isCourseUnlocked("business") ? '🔒 Unlock this course' : (businessDone===BUSINESS_LESSONS.length ? 'Review course' : (businessDone>0 ? 'Continue course' : 'Start the course'))}</button>
@@ -3087,8 +3142,8 @@ function renderHome(){
               <div class="course-card-title">${c.title}</div>
               <div class="course-card-badge ${isCourseUnlocked("strategic")?'active':''}">${!isCourseUnlocked("strategic") ? '🔒 Locked' : (strategicDone===STRATEGIC_LESSONS.length ? 'Completed' : (strategicDone>0 ? 'In progress' : 'Available'))}</div>
             </div>
+            <div class="course-card-price">${formatCoursePriceDiscount("strategic", selectedCountry())}</div>
             <div class="course-card-desc">${c.desc}</div>
-            <div class="course-card-price">Enrollment fee: ${formatCoursePrice("strategic", selectedCountry())}</div>
             <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${strategicPct}%"></div></div>
             <div class="course-card-meta">${strategicDone} of ${STRATEGIC_LESSONS.length} lessons complete · 10 questions each</div>
             <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('strategic')">${!isCourseUnlocked("strategic") ? '🔒 Unlock this course' : (strategicDone===STRATEGIC_LESSONS.length ? 'Review course' : (strategicDone>0 ? 'Continue course' : 'Start the course'))}</button>
@@ -3099,8 +3154,8 @@ function renderHome(){
               <div class="course-card-title">${c.title}</div>
               <div class="course-card-badge ${isCourseUnlocked("team")?'active':''}">${!isCourseUnlocked("team") ? '🔒 Locked' : (teamDone===TEAM_LESSONS.length ? 'Completed' : (teamDone>0 ? 'In progress' : 'Available'))}</div>
             </div>
+            <div class="course-card-price">${formatCoursePriceDiscount("team", selectedCountry())}</div>
             <div class="course-card-desc">${c.desc}</div>
-            <div class="course-card-price">Enrollment fee: ${formatCoursePrice("team", selectedCountry())}</div>
             <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${teamPct}%"></div></div>
             <div class="course-card-meta">${teamDone} of ${TEAM_LESSONS.length} lessons complete · 10 questions each</div>
             <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('team')">${!isCourseUnlocked("team") ? '🔒 Unlock this course' : (teamDone===TEAM_LESSONS.length ? 'Review course' : (teamDone>0 ? 'Continue course' : 'Start the course'))}</button>
@@ -3115,6 +3170,17 @@ function renderHome(){
             <button class="wp-action course-card-btn" disabled>Not yet available</button>
           </div>
         `).join("")}
+        <div class="course-card" role="button" tabindex="0" aria-label="Open GBLU Mastery: The Core Five" onclick="openCourse('core')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCourse('core')}">
+          <div class="course-card-top">
+            <div class="course-card-title">★ GBLU Mastery: The Core Five</div>
+            <div class="course-card-badge ${isCourseUnlocked("core")?'active':''}">${!isCourseUnlocked("core") ? '🔒 Locked' : (coreDone===CORE_FIVE_LESSONS.length ? 'Completed' : (coreDone>0 ? 'In progress' : 'Start here'))}</div>
+          </div>
+          <div class="course-card-price">${formatCoursePriceDiscount("core", selectedCountry())}</div>
+          <div class="course-card-desc">A general leadership foundation with two lessons each in general leadership, communication and influence, business fundamentals and entrepreneurship, team culture and management, and strategic decision-making.</div>
+          <div class="progress-track" style="margin:16px 0 10px;"><div class="progress-fill" style="width:${corePct}%"></div></div>
+          <div class="course-card-meta">${coreDone} of ${CORE_FIVE_LESSONS.length} lessons complete · 10 questions each</div>
+          <button class="btn-primary course-card-btn" onclick="event.stopPropagation(); openCourse('core')">${!isCourseUnlocked("core") ? '🔒 Unlock this course' : (coreDone===CORE_FIVE_LESSONS.length ? 'Review course' : (coreDone>0 ? 'Continue course' : 'Start the course'))}</button>
+        </div>
       </div>
       <div class="reset-panel">
         <button class="reset-button" onclick="resetProgress()">Reset GBLU Academy progress</button>
@@ -3129,7 +3195,7 @@ function renderPayment(courseIdOverride){
   const courseId = validIds.includes(courseIdOverride) ? courseIdOverride : (validIds.includes(state.paymentCourse) ? state.paymentCourse : "core");
   state.paymentCourse = courseId;
   const course = activeCourseInfoFor(courseId);
-  const price = formatCoursePrice(courseId, selectedCountry());
+  const price = formatCoursePriceDiscount(courseId, selectedCountry());
   const profile = state.profile || createApplicantProfile();
   const existing = latestRequestFor(courseId);
   const justSubmitted = state.paymentFormSubmittedId && existing && existing.id === state.paymentFormSubmittedId;
@@ -3137,7 +3203,7 @@ function renderPayment(courseIdOverride){
     <section class="course-head">
       <h2>Unlock ${escapeHtml(course.title)}</h2>
       <p>This course is locked until your payment has been manually confirmed. Pay using one of the options below, then either submit your payment for review or, if you already have an access code, enter it directly.</p>
-      <div class="enrollment-note"><strong>Enrollment fee: ${price}.</strong> Ethiopia: 600 birr for GBLU Mastery: The Core Five and 200 birr for other courses. International pricing starts at $5 / $2 and is shown in the selected country's currency.</div>
+      <div class="enrollment-note"><strong>Enrollment fee: ${price}.</strong> Ethiopia: 200 birr for most courses and 600 birr for GBLU Mastery: The Core Five (discounted from 300 / 1,000 birr). International pricing is $2 / $5 (discounted from $3 / $6), shown in the selected country's currency.</div>
     </section>
     <div class="payment-panel">
       <div class="payment-disclaimer">This site is not connected to Telebirr, M-Pesa, or CBE — it cannot detect, receive, or confirm a payment automatically. Every payment here is verified manually by a person. After you pay, keep your transaction reference and a screenshot of the confirmation.</div>
@@ -3151,37 +3217,15 @@ function renderPayment(courseIdOverride){
         `).join("")}
       </div>
 
-      ${existing ? `
-        <div class="request-status-note status-${existing.status.toLowerCase()}">
-          ${justSubmitted ? `<strong>Submitted.</strong> ` : ''}Your ${justSubmitted ? '' : 'most recent '}submission (reference ${escapeHtml(existing.transactionRef)}) is currently <strong>${existing.status}</strong>.
-          ${existing.status === "PENDING" ? " We'll unlock the course as soon as it's manually verified." : ""}
-          ${existing.status === "REJECTED" ? ` ${existing.rejectionReason ? `Reason: ${escapeHtml(existing.rejectionReason)}. ` : ''}You're welcome to submit again below.` : ""}
-        </div>
-      ` : ''}
+      <div class="telegram-cta" style="margin:20px 0;">
+        <a class="btn-primary" style="display:inline-block;text-decoration:none;text-align:center;"
+           href="https://t.me/${GBLU_BOT_USERNAME}?start=course_${encodeURIComponent(courseId)}" target="_blank" rel="noopener">
+           Pay &amp; get your code on Telegram
+        </a>
+        <p class="feedback" style="margin-top:10px;">Tap the button above to open our Telegram bot. It collects your email, phone, and a screenshot of your payment, then sends you an access code once it's approved.</p>
+      </div>
 
-      <h3 class="lesson-h3" style="margin-top:0;">Submit your payment for review</h3>
-      <p class="feedback" style="margin-bottom:16px;">Fill this in after paying. An administrator will manually check it against the ${PAYMENT_METHODS.map(m=>escapeHtml(m.name)).join('/')} account and approve or reject it.</p>
-      <form class="unlock-form payment-request-form" onsubmit="submitPaymentRequest(event)">
-        <label for="payerName">Your full name</label>
-        <input id="payerName" type="text" value="${escapeHtml(profile.name)}" placeholder="Full name" autocomplete="name">
-        <label for="payerEmail">Your email</label>
-        <input id="payerEmail" type="email" value="${escapeHtml(profile.email)}" placeholder="you@example.com" autocomplete="email">
-        <label for="payerMethod">Payment method used</label>
-        <select id="payerMethod">
-          ${PAYMENT_METHODS.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)}</option>`).join("")}
-        </select>
-        <label for="payerRef">Transaction / reference number</label>
-        <input id="payerRef" type="text" placeholder="e.g. the code from your Telebirr SMS" autocomplete="off">
-        <label for="payerDate">Payment date</label>
-        <input id="payerDate" type="date" max="${new Date().toISOString().slice(0,10)}">
-        <label for="payerScreenshot">Payment screenshot</label>
-        <input id="payerScreenshot" type="file" accept="image/*" onchange="handleScreenshotChange(this)">
-        ${pendingScreenshotDataUrl ? `<div class="screenshot-attached">Attached: ${escapeHtml(pendingScreenshotName || 'screenshot')} ✓</div>` : ''}
-        <button class="btn-primary" type="submit">Submit for verification</button>
-      </form>
-      ${state.paymentFormError ? `<div class="payment-error" role="alert">${escapeHtml(state.paymentFormError)}</div>` : ''}
-
-      <details class="access-code-details">
+      <details class="access-code-details" open>
         <summary>Already have an access code?</summary>
         <form class="unlock-form" onsubmit="submitUnlockCode(event)">
           <label for="unlockCodeField">Access code</label>
@@ -3655,8 +3699,8 @@ function render(){
   }
   if(state.view === "home") body = renderHome();
   else if(state.view === "payment") body = renderPayment();
-  else if(state.view === "course") body = isCourseUnlocked(state.activeCourse) ? renderCourse() : renderPayment(state.activeCourse);
-  else if(state.view === "lesson") body = isCourseUnlocked(state.activeCourse) ? renderLesson() : renderPayment(state.activeCourse);
+  else if(state.view === "course") body = !isCourseUnlocked(state.activeCourse) ? renderPayment(state.activeCourse) : (courseIsComplete() ? renderCertificate() : renderCourse());
+  else if(state.view === "lesson") body = !isCourseUnlocked(state.activeCourse) ? renderPayment(state.activeCourse) : (courseIsComplete() ? renderCertificate() : renderLesson());
   else if(state.view === "certificate") body = isCourseUnlocked(state.activeCourse) ? renderCertificate() : renderPayment(state.activeCourse);
   else if(state.view === "verify") body = renderVerification();
   else if(state.view === "admin-login") body = adminSession.loggedIn ? renderAdminDashboard() : renderAdminLogin();
