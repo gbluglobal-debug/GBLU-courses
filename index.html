@@ -362,7 +362,7 @@
   }
 </style>
 </head>
-<body>
+<body oncontextmenu="return false;">
 <div class="app" id="app"></div>
 
 <script>
@@ -3711,6 +3711,29 @@ function render(){
 initEmailJs();
 loadProgress();
 loadPaymentData();
+
+// --- Basic copy/inspect deterrents ---------------------------------------
+// None of this stops a determined, technical visitor (browser devtools can
+// always be opened from the menu bar), but it removes the easy, accidental
+// paths: right-click, the common Inspect/View Source keyboard shortcuts, and
+// drag-selecting lesson text to copy it.
+document.addEventListener("contextmenu", function(e){ e.preventDefault(); return false; });
+
+document.addEventListener("keydown", function(e){
+  const key = (e.key || "").toLowerCase();
+  const blockCombo =
+    key === "f12" ||
+    ((e.ctrlKey || e.metaKey) && e.shiftKey && (key === "i" || key === "j" || key === "c")) ||
+    ((e.ctrlKey || e.metaKey) && (key === "u" || key === "s"));
+  if(blockCombo){
+    e.preventDefault();
+    return false;
+  }
+});
 </script>
+<style>
+  body, .lesson, .course-card, .course-head, .payment-panel { user-select: none; -webkit-user-select: none; }
+  input, textarea, select, .unlock-form input { user-select: text; -webkit-user-select: text; }
+</style>
 </body>
 </html>
