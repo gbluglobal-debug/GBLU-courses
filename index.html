@@ -91,9 +91,12 @@
   .payment-disclaimer{background:var(--surface-raised); border-left:3px solid var(--brass); padding:14px 16px; font-size:0.88rem; color:var(--text-dim); line-height:1.55; margin-bottom:24px;}
   .payment-methods{display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:14px; margin-bottom:28px;}
   .payment-method{background:var(--surface); border:1px solid var(--line); border-radius:4px; padding:16px 18px;}
-  .payment-method-name{font-family:var(--serif); font-size:1.05rem; font-weight:600; color:var(--brass); margin-bottom:8px;}
+  .payment-method-name{font-family:var(--serif); font-size:1.05rem; font-weight:600; color:var(--brass); margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:8px;}
   .payment-method-account{font-size:1.05rem; letter-spacing:0.3px; color:var(--text); margin-bottom:4px;}
   .payment-method-holder{font-size:0.85rem; color:var(--text-dim);}
+  .copy-btn{background:var(--surface-raised); border:1px solid var(--line); color:var(--text-dim); font-size:0.72rem; letter-spacing:0.3px; padding:3px 9px; border-radius:20px; white-space:nowrap; transition:border-color 0.15s, color 0.15s;}
+  .copy-btn:hover{border-color:var(--brass); color:var(--brass);}
+  .copy-btn.copied{border-color:var(--teal); color:var(--teal);}
   .unlock-form{display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; padding-top:6px; border-top:1px solid var(--line);}
   .unlock-form label{flex:1 1 100%; font-size:0.86rem; color:var(--text-dim); margin-bottom:6px;}
   .unlock-form input{flex:1 1 220px; background:var(--surface); border:1px solid var(--line); color:var(--text); padding:11px 14px; border-radius:2px; font-size:0.95rem;}
@@ -2114,6 +2117,42 @@ function escapeHtml(value){
   }[char]));
 }
 
+function copyAccountNumber(value, btn){
+  const done = () => {
+    if(!btn) return;
+    const original = btn.dataset.label || btn.textContent;
+    btn.dataset.label = original;
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
+    clearTimeout(btn._copyResetTimer);
+    btn._copyResetTimer = setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove("copied");
+    }, 1500);
+  };
+  const fallback = () => {
+    try{
+      const el = document.createElement("textarea");
+      el.value = value;
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      done();
+    }catch(e){
+      /* copy not supported; silently ignore */
+    }
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(value).then(done).catch(fallback);
+  }else{
+    fallback();
+  }
+}
+
 function getStorage(){
   try{
     return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
@@ -3210,7 +3249,10 @@ function renderPayment(courseIdOverride){
       <div class="payment-methods">
         ${PAYMENT_METHODS.map(m => `
           <div class="payment-method">
-            <div class="payment-method-name">${escapeHtml(m.name)}</div>
+            <div class="payment-method-name">
+              <span>${escapeHtml(m.name)}</span>
+              <button type="button" class="copy-btn" onclick="copyAccountNumber('${escapeHtml(m.account)}', this)">Copy</button>
+            </div>
             <div class="payment-method-account">${escapeHtml(m.account)}</div>
             <div class="payment-method-holder">Account name: ${escapeHtml(m.holder)}</div>
           </div>
